@@ -16,7 +16,7 @@ class Game:
         self.started = False
         self.letter = None
         self.start_time = None
-        self.max_time = 60
+        self.max_time = 300
 
         self.state_lock = threading.Lock()
 

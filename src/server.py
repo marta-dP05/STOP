@@ -5,8 +5,11 @@ import time
 from game import GameManager
 from protocol import parse_http_path, http_response, format_board_state, format_message
 
-
 HOST = "0.0.0.0"
+PORT = 8090
+GAME_PORT = 8091
+LOCK_TIME = 15
+GAME_TIME = 300
 PORT = 8090
 
 manager = GameManager()
@@ -131,7 +134,7 @@ def handle_game_connection(client_socket):
 
                     unlock_thread = threading.Thread(
                         target=auto_unlock,
-                        args=(game, category, player_name, 5),
+                        args=(game, category, player_name, 15),
                         daemon=True
                     )
                     unlock_thread.start()
