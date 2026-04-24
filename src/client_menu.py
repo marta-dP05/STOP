@@ -7,7 +7,7 @@ from urllib.error import URLError, HTTPError
 
 HTTP_PORT = 8090
 GAME_PORT = 8091
-DEFAULT_HOST = "20.199.9.159"
+DEFAULT_HOST = "127.0.0.1"
 
 CATEGORIES = ["marca", "comida", "lugar", "animal"]
 

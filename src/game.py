@@ -14,6 +14,7 @@ class Game:
         self.locks = {cat: None for cat in self.categories}   # cat -> player_name o None
 
         self.started = False
+        self.finished = False
         self.letter = None
         self.start_time = None
         self.max_time = 300
@@ -102,11 +103,16 @@ class Game:
 
     def is_finished(self):
         with self.state_lock:
+            if self.finished:
+                return True
+
             if all(self.board[cat] != "" for cat in self.categories):
+                self.finished = True
                 return True
 
             if self.started and self.start_time is not None:
                 if time.time() - self.start_time >= self.max_time:
+                    self.finished = True
                     return True
 
             return False
@@ -121,6 +127,10 @@ class Game:
                 "locks": dict(self.locks),
                 "players": list(self.players.keys())
             }
+
+    def finish_game(self):
+        with self.state_lock:
+            self.finished = True
 
 
 class GameManager:
