@@ -11,8 +11,17 @@ PORT = 8090
 GAME_PORT = 8091
 LOCK_TIME = 15
 
-
 manager = GameManager()
+
+round_transition_locks = {}
+round_transition_locks_guard = threading.Lock()
+
+
+def get_round_transition_lock(game_id):
+    with round_transition_locks_guard:
+        if game_id not in round_transition_locks:
+            round_transition_locks[game_id] = threading.Lock()
+        return round_transition_locks[game_id]
 
 
 def auto_unlock(game, category, player_name, seconds=LOCK_TIME):
@@ -27,20 +36,88 @@ def auto_unlock(game, category, player_name, seconds=LOCK_TIME):
         game.broadcast(format_board_state(game.board_state()))
 
 
-def end_game_for_all(game):
-    if not game.finished:
-        game.finish_game()
+def finish_round_or_game(game, observed_round):
+    lock = get_round_transition_lock(game.game_id)
 
-    game.broadcast(format_message("END", "La partida ha terminado"))
-    game.broadcast(format_board_state(game.board_state()))
+    with lock:
+        if game.finished:
+            return
+
+        if game.current_round != observed_round:
+            return
+
+        if not game.started:
+            return
+
+        game.finish_current_round()
+
+        ranking = game.get_ranking()
+        round_number = game.current_round
+        round_end_state = game.board_state()
+
+        game.broadcast(
+            format_message(
+                "ROUND_END",
+                {
+                    "round": round_number,
+                    "scores": ranking
+                }
+            )
+        )
+        game.broadcast(format_board_state(round_end_state))
+
+        if round_number >= game.total_rounds:
+            game.finish_game()
+            final_ranking = game.get_ranking()
+            final_state = game.board_state()
+
+            game.broadcast(
+                format_message(
+                    "END",
+                    {
+                        "message": "La partida ha terminado",
+                        "ranking": final_ranking
+                    }
+                )
+            )
+            game.broadcast(format_board_state(final_state))
+            return
+
+        ok, letter = game.start_next_round()
+        if ok:
+            next_state = game.board_state()
+            game.broadcast(
+                format_message(
+                    "ROUND_START",
+                    {
+                        "round": game.current_round,
+                        "total_rounds": game.total_rounds,
+                        "letter": letter
+                    }
+                )
+            )
+            game.broadcast(format_board_state(next_state))
+
+            timer_thread = threading.Thread(
+                target=game_timer,
+                args=(game, game.current_round),
+                daemon=True
+            )
+            timer_thread.start()
 
 
-def game_timer(game):
+def game_timer(game, observed_round):
     while True:
         time.sleep(1)
 
-        if game.is_finished():
-            end_game_for_all(game)
+        if game.finished:
+            break
+
+        if game.current_round != observed_round:
+            break
+
+        if game.should_end_round():
+            finish_round_or_game(game, observed_round)
             break
 
 
@@ -121,7 +198,12 @@ def handle_game_connection(client_socket):
             client_socket.close()
             return
 
-        game.add_player(player_name, client_socket)
+        ok, msg = game.add_player(player_name, client_socket)
+        if not ok:
+            client_socket.sendall((format_message("ERROR", msg) + "\n").encode())
+            client_socket.close()
+            return
+
         game.broadcast(format_message("INFO", f"{player_name} se ha unido a la partida {game_id}"))
         game.broadcast(format_board_state(game.board_state()))
 
@@ -130,7 +212,7 @@ def handle_game_connection(client_socket):
             if raw is None:
                 break
 
-            if game.finished and raw != "EXIT":
+            if game.finished and raw != "EXIT" and raw != "BOARD":
                 client_socket.sendall(
                     (format_message("ERROR", "La partida ya ha terminado") + "\n").encode()
                 )
@@ -139,12 +221,21 @@ def handle_game_connection(client_socket):
             if raw == "GO!":
                 ok, result = game.start_game()
                 if ok:
-                    game.broadcast(format_message("START", f"Partida iniciada con letra {result}"))
+                    game.broadcast(
+                        format_message(
+                            "ROUND_START",
+                            {
+                                "round": game.current_round,
+                                "total_rounds": game.total_rounds,
+                                "letter": result
+                            }
+                        )
+                    )
                     game.broadcast(format_board_state(game.board_state()))
 
                     timer_thread = threading.Thread(
                         target=game_timer,
-                        args=(game,),
+                        args=(game, game.current_round),
                         daemon=True
                     )
                     timer_thread.start()
@@ -188,14 +279,15 @@ def handle_game_connection(client_socket):
                     continue
 
                 _, category, word = parts
+                observed_round = game.current_round
                 ok, msg = game.write_category(category, word, player_name)
 
                 if ok:
-                    game.broadcast(format_message("INFO", f"{player_name} ha escrito {word} en {category}"))
+                    game.broadcast(format_message("INFO", f"{player_name} ha completado {category} con {word}"))
                     game.broadcast(format_board_state(game.board_state()))
 
-                    if game.is_finished():
-                        end_game_for_all(game)
+                    if game.should_end_round():
+                        finish_round_or_game(game, observed_round)
                 else:
                     client_socket.sendall((format_message("ERROR", msg) + "\n").encode())
 

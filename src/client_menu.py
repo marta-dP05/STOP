@@ -9,7 +9,19 @@ HTTP_PORT = 8090
 GAME_PORT = 8091
 DEFAULT_HOST = "127.0.0.1"
 
-CATEGORIES = ["marca", "comida", "lugar", "animal"]
+CATEGORIES = [
+    "animal",
+    "lugar",
+    "comida",
+    "marca",
+    "color",
+    "famoso",
+    "serie/peli",
+    "objeto",
+    "profesion",
+    "deporte",
+    "nombre"
+]
 
 
 class ClientState:
@@ -24,34 +36,53 @@ state = ClientState()
 
 
 def print_separator():
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
+
+
+def pretty_category_name(category):
+    return category
 
 
 def print_board(board_data):
     print_separator()
     print(f"Partida: {board_data['game_id']}")
+    print(f"Ronda: {board_data.get('current_round', 1)}/{board_data.get('total_rounds', 1)}")
     print(f"Iniciada: {'Sí' if board_data['started'] else 'No'}")
+    print(f"Terminada: {'Sí' if board_data.get('finished', False) else 'No'}")
     print(f"Letra: {board_data['letter'] if board_data['letter'] else '-'}")
 
     players = board_data.get("players", [])
     print(f"Jugadores: {', '.join(players) if players else '-'}")
-    print("-" * 50)
+    print("-" * 60)
 
     board = board_data["board"]
     locks = board_data["locks"]
+    completed_by = board_data.get("completed_by", {})
 
     for category in board:
         value = board[category] if board[category] else "[vacío]"
-        locked_by = locks[category]
+        locked_by = locks.get(category)
+        author = completed_by.get(category)
 
-        if locked_by is None:
-            lock_text = ""
-        else:
-            lock_text = f"  🔒 bloqueado por {locked_by}"
+        extra = ""
+        if locked_by is not None:
+            extra += f"  🔒 bloqueado por {locked_by}"
+        if author:
+            extra += f"  ✅ completado por {author}"
 
-        print(f"{category:<10}: {value}{lock_text}")
+        print(f"{pretty_category_name(category):<12}: {value}{extra}")
 
-    print("=" * 50 + "\n")
+    print("-" * 60)
+    print("Puntuaciones:")
+    scores = board_data.get("scores", {})
+    if scores:
+        ranking = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        for i, (player, points) in enumerate(ranking, start=1):
+            print(f"{i}. {player}: {points} puntos")
+    else:
+        print("Sin puntuaciones todavía")
+
+    print("=" * 60 + "\n")
 
 
 def handle_message(raw_message):
@@ -74,11 +105,22 @@ def handle_message(raw_message):
     elif msg_type == "ERROR":
         print(f"\n[ERROR] {data}")
 
-    elif msg_type == "START":
-        print(f"\n[PARTIDA] {data}")
+    elif msg_type == "ROUND_START":
+        print(
+            f"\n[RONDA] Empieza la ronda {data['round']}/{data['total_rounds']} con letra {data['letter']}"
+        )
+
+    elif msg_type == "ROUND_END":
+        print(f"\n[RONDA] Ha terminado la ronda {data['round']}")
+        print("Ranking provisional:")
+        for i, (player, points) in enumerate(data["scores"], start=1):
+            print(f"{i}. {player}: {points} puntos")
 
     elif msg_type == "END":
-        print(f"\n[FIN] {data}")
+        print(f"\n[FIN] {data['message']}")
+        print("Ranking final:")
+        for i, (player, points) in enumerate(data["ranking"], start=1):
+            print(f"{i}. {player}: {points} puntos")
 
     elif msg_type == "BOARD":
         state.board_data = data
@@ -114,20 +156,21 @@ def receive_messages(sock):
 
 def http_get_json(host, path):
     url = f"http://{host}:{HTTP_PORT}{path}"
-    with urlopen(url) as response:
+    with urlopen(url, timeout=5) as response:
         data = response.read().decode()
         return json.loads(data)
 
 
 def create_game(host):
     try:
+        print(f"\n[INFO] Intentando crear partida en http://{host}:{HTTP_PORT}/stop/new")
         data = http_get_json(host, "/stop/new")
         print(f"\n[OK] Partida creada con ID: {data['game_id']}")
         return data["game_id"]
     except HTTPError as e:
         print(f"\n[ERROR] HTTP {e.code}")
-    except URLError:
-        print("\n[ERROR] No se pudo contactar con el servidor HTTP.")
+    except URLError as e:
+        print(f"\n[ERROR] No se pudo contactar con el servidor HTTP: {e}")
     except Exception as e:
         print(f"\n[ERROR] {e}")
     return None
@@ -139,6 +182,18 @@ def check_game_exists(host, game_id):
         return data.get("game_id") == game_id
     except Exception:
         return False
+
+
+def recv_line_blocking(sock):
+    data = b""
+    while True:
+        chunk = sock.recv(1)
+        if not chunk:
+            break
+        data += chunk
+        if chunk == b"\n":
+            break
+    return data.decode()
 
 
 def connect_game_socket(host, player_name, game_id):
@@ -156,18 +211,6 @@ def connect_game_socket(host, player_name, game_id):
     return client
 
 
-def recv_line_blocking(sock):
-    data = b""
-    while True:
-        chunk = sock.recv(1)
-        if not chunk:
-            break
-        data += chunk
-        if chunk == b"\n":
-            break
-    return data.decode()
-
-
 def choose_category():
     print("\nElige categoría:")
     for i, cat in enumerate(CATEGORIES, start=1):
@@ -175,7 +218,8 @@ def choose_category():
 
     option = input("> ").strip()
 
-    if option not in {"1", "2", "3", "4"}:
+    valid_options = {str(i) for i in range(1, len(CATEGORIES) + 1)}
+    if option not in valid_options:
         print("[ERROR] Opción no válida.")
         return None
 
